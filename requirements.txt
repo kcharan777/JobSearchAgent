@@ -6,3 +6,4 @@ langgraph
 langserve
 sse_starlette
 pydantic
+orjson
