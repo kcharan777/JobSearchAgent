@@ -301,11 +301,37 @@ def health():
     }
 
 
-add_routes(
-    app,
-    chain,
-    path="/agent"
-)
+from fastapi import HTTPException
+
+@app.post("/agent/invoke")
+def invoke_agent(data: JobInput):
+
+    try:
+        response = agent.invoke({
+            "messages": [
+                {
+                    "role": "user",
+                    "content": data.input
+                }
+            ]
+        })
+
+        answer = response["messages"][-1].content
+
+        if isinstance(answer, list):
+            answer = "\n".join(
+                item.get("text", "")
+                for item in answer
+                if isinstance(item, dict)
+            )
+
+        return {"output": answer}
+
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=str(e)
+        )
 
 
 # -----------------------------
