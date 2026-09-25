@@ -1,47 +1,57 @@
+
 import os
-import json
+import re
+import html
 import requests
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 from langchain_google_genai import ChatGoogleGenerativeAI
-from langchain_core.tools import tool
-from langgraph.prebuilt import create_react_agent
 
 
-# -----------------------------
-# API CONFIGURATION
-# -----------------------------
+# ---------------- CONFIGURATION ----------------
 
 INDIAN_API_URL = "https://jobs.indianapi.in/jobs"
 
 INDIAN_API_KEY = os.environ.get("INDIAN_API_KEY")
-
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
 
-# -----------------------------
-# GEMINI MODEL
-# -----------------------------
+# ---------------- FASTAPI APP ----------------
 
-llm = ChatGoogleGenerativeAI(
-    model="gemini-3.5-flash-lite",
-    google_api_key=GEMINI_API_KEY,
-    max_retries=5
+app = FastAPI(title="Live Job Search Agent")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 
-# -----------------------------
-# FETCH LIVE JOBS
-# -----------------------------
+# ---------------- GEMINI MODEL ----------------
+
+llm = None
+
+if GEMINI_API_KEY:
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-3.5-flash-lite",
+        google_api_key=GEMINI_API_KEY,
+        temperature=0.2
+    )
+
+
+# ---------------- FETCH LIVE JOBS ----------------
 
 def fetch_live_jobs(limit=50):
 
     if not INDIAN_API_KEY:
-        raise Exception(
-            "INDIAN_API_KEY is missing in Render Environment."
+        raise HTTPException(
+            status_code=500,
+            detail="INDIAN_API_KEY is missing in Render environment variables."
         )
 
     headers = {
@@ -49,356 +59,490 @@ def fetch_live_jobs(limit=50):
     }
 
     params = {
-        "limit": str(limit)
+        "limit": limit
     }
 
-    response = requests.get(
-        INDIAN_API_URL,
-        headers=headers,
-        params=params,
-        timeout=30
-    )
-
-    if response.status_code == 401:
-        raise Exception(
-            "Invalid Indian API key. Check Render Environment."
-        )
-
-    response.raise_for_status()
-
-    data = response.json()
-
-    # API may return a list or a dictionary containing jobs
-
-    if isinstance(data, list):
-        jobs = data
-
-    elif isinstance(data, dict):
-        jobs = data.get("jobs", [])
-
-    else:
-        jobs = []
-
-    return jobs
-
-
-# -----------------------------
-# TOOL 1: SEARCH LIVE JOBS
-# -----------------------------
-
-@tool
-def search_jobs(role: str, location: str = "") -> str:
-    """
-    Search real job vacancies using Indian Jobs API.
-    Search by job role and preferred location.
-    """
-
     try:
-
-        jobs = fetch_live_jobs(limit=50)
-
-        results = []
-
-        for job in jobs:
-
-            title = str(
-                job.get("title", "")
-                or job.get("job_title", "")
-            )
-
-            company = str(
-                job.get("company", "")
-            )
-
-            job_location = str(
-                job.get("location", "")
-            )
-
-            description = str(
-                job.get("job_description", "")
-            )
-
-            skills = str(
-                job.get("education_and_skills", "")
-            )
-
-            role_text = (
-                title + " " +
-                description + " " +
-                skills
-            ).lower()
-
-            location_text = job_location.lower()
-
-            # Match role
-
-            role_match = (
-                not role
-                or role.lower() in role_text
-            )
-
-            # Match location
-
-            location_match = (
-                not location
-                or location.lower() in location_text
-                or "remote" in location_text
-            )
-
-            if role_match and location_match:
-
-                results.append({
-                    "title": title,
-                    "company": company,
-                    "location": job_location,
-                    "job_type": job.get("job_type", ""),
-                    "experience": job.get("experience", ""),
-                    "salary": job.get("salary", ""),
-                    "description": description,
-                    "required_skills": skills,
-                    "apply_link": job.get("apply_link", ""),
-                    "posted_date": job.get("posted_date", "")
-                })
-
-        return json.dumps(
-            {
-                "total_found": len(results),
-                "jobs": results[:15]
-            },
-            ensure_ascii=False
+        response = requests.get(
+            INDIAN_API_URL,
+            headers=headers,
+            params=params,
+            timeout=30
         )
 
-    except Exception as e:
+        response.raise_for_status()
 
-        return json.dumps({
-            "error": str(e)
-        })
+        data = response.json()
 
+        if isinstance(data, list):
+            jobs = data
 
-# -----------------------------
-# TOOL 2: MATCH SKILLS
-# -----------------------------
+        elif isinstance(data, dict):
+            jobs = (
+                data.get("jobs")
+                or data.get("data")
+                or data.get("results")
+                or []
+            )
 
-@tool
-def match_skills(
-    user_skills: str,
-    required_skills: str
-) -> str:
-    """
-    Compare user skills with the skills required for a job.
-    Return matched skills, missing skills and match percentage.
-    """
+        else:
+            jobs = []
 
-    user_list = [
-        s.strip().lower()
-        for s in user_skills.split(",")
-        if s.strip()
-    ]
+        if not isinstance(jobs, list):
+            jobs = []
 
-    required_list = [
-        s.strip().lower()
-        for s in required_skills.split(",")
-        if s.strip()
-    ]
+        return jobs
 
-    matched = [
-        skill for skill in required_list
-        if any(
-            skill in user_skill
-            or user_skill in skill
-            for user_skill in user_list
+    except requests.exceptions.Timeout:
+        raise HTTPException(
+            status_code=504,
+            detail="The job API took too long to respond."
         )
+
+    except requests.exceptions.HTTPError as e:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Job API returned an error: {e.response.status_code}"
+        )
+
+    except requests.exceptions.RequestException:
+        raise HTTPException(
+            status_code=502,
+            detail="Could not connect to the live job API."
+        )
+
+    except ValueError:
+        raise HTTPException(
+            status_code=502,
+            detail="The job API returned invalid JSON."
+        )
+
+
+# ---------------- CLEAN JOB DATA ----------------
+
+def clean(value):
+
+    if value is None:
+        return ""
+
+    if isinstance(value, list):
+        value = ", ".join(str(x) for x in value)
+
+    if isinstance(value, dict):
+        value = str(value)
+
+    return html.unescape(str(value)).strip()
+
+
+def get_job_details(job):
+
+    return {
+        "title": clean(
+            job.get("job_title")
+            or job.get("title")
+            or "Not provided"
+        ),
+
+        "company": clean(
+            job.get("company") or "Not provided"
+        ),
+
+        "location": clean(
+            job.get("location") or "Not provided"
+        ),
+
+        "job_type": clean(
+            job.get("job_type") or "Not provided"
+        ),
+
+        "experience": clean(
+            job.get("experience") or "Not specified"
+        ),
+
+        "description": clean(
+            job.get("job_description")
+            or job.get("about_company")
+            or "Not provided"
+        ),
+
+        "skills": clean(
+            job.get("education_and_skills")
+            or "Not specified"
+        ),
+
+        "responsibilities": clean(
+            job.get("role_and_responsibility")
+            or "Not specified"
+        ),
+
+        "apply_link": clean(
+            job.get("apply_link") or ""
+        ),
+
+        "posted_date": clean(
+            job.get("posted_date") or "Not specified"
+        )
+    }
+
+
+# ---------------- SKILL MATCHING ----------------
+
+def calculate_skill_match(user_skills, job):
+
+    if not user_skills:
+        return [], [], 0
+
+    requirements = (
+        job["skills"] + " " +
+        job["description"] + " " +
+        job["responsibilities"] + " " +
+        job["title"]
+    ).lower()
+
+    skills = [
+        skill.strip()
+        for skill in re.split(r"[,;\n]", user_skills)
+        if skill.strip()
     ]
 
-    missing = [
-        skill for skill in required_list
-        if skill not in matched
-    ]
+    matched = []
+    missing = []
 
-    percentage = (
-        round(len(matched) / len(required_list) * 100)
-        if required_list else 0
+    for skill in skills:
+
+        if skill.lower() in requirements:
+            matched.append(skill)
+
+        else:
+            missing.append(skill)
+
+    percentage = round(
+        len(matched) / len(skills) * 100
     )
 
-    return json.dumps({
-        "matched_skills": matched,
-        "missing_skills": missing,
-        "match_percentage": percentage
-    })
+    return matched, missing, percentage
 
 
-# -----------------------------
-# CREATE LANGGRAPH AGENT
-# -----------------------------
+# ---------------- SEARCH LIVE JOBS ----------------
 
-tools = [
-    search_jobs,
-    match_skills
-]
+def search_jobs(role, location="", skills="", limit=50):
 
-agent = create_react_agent(
-    llm,
-    tools
-)
+    jobs = fetch_live_jobs(limit)
+
+    role = role.strip().lower()
+    location = location.strip().lower()
+
+    results = []
+
+    for raw_job in jobs:
+
+        job = get_job_details(raw_job)
+
+        searchable_text = (
+            job["title"] + " " +
+            job["description"] + " " +
+            job["skills"] + " " +
+            job["responsibilities"]
+        ).lower()
+
+        # Match the requested job role
+
+        if role:
+
+            role_words = [
+                word for word in role.split()
+                if word not in [
+                    "job", "jobs", "fresher",
+                    "freshers", "for", "in"
+                ]
+            ]
+
+            if role_words and not all(
+                word in searchable_text
+                for word in role_words
+            ):
+                # Accept if the complete role appears
+                if role not in searchable_text:
+                    continue
+
+        # Match the requested location
+
+        if location:
+
+            job_location = job["location"].lower()
+
+            location_aliases = {
+                "bangalore": ["bangalore", "bengaluru"],
+                "bengaluru": ["bangalore", "bengaluru"],
+                "hyderabad": ["hyderabad"],
+                "chennai": ["chennai"],
+                "pune": ["pune"],
+                "mumbai": ["mumbai"],
+                "delhi": ["delhi", "new delhi"],
+                "remote": ["remote", "work from home", "wfh"]
+            }
+
+            locations_to_check = location_aliases.get(
+                location,
+                [location]
+            )
+
+            if not any(
+                loc in job_location
+                for loc in locations_to_check
+            ) and "remote" not in job_location:
+
+                continue
+
+        matched, missing, percentage = (
+            calculate_skill_match(skills, job)
+        )
+
+        job["matched_skills"] = matched
+        job["missing_skills"] = missing
+        job["match_percentage"] = percentage
+
+        results.append(job)
+
+    return results
 
 
-# -----------------------------
-# FASTAPI APPLICATION
-# -----------------------------
+# ---------------- FORMAT RESULTS ----------------
 
-app = FastAPI(
-    title="Job Search Agent",
-    version="2.0",
-    description="Live Job Search and Skill Matching Agent"
-)
+def format_results(results, role, location, skills):
+
+    if not results:
+
+        return (
+            "No matching live jobs were found.\n\n"
+            "Try another job role or location. "
+            "The API may currently provide only a limited "
+            "number of vacancies."
+        )
+
+    output = []
+
+    output.append("LIVE JOB SEARCH RESULTS")
+    output.append("=" * 35)
+
+    output.append(f"Requested Role: {role or 'Any'}")
+    output.append(f"Location: {location or 'Any'}")
+    output.append(f"Live Jobs Found: {len(results)}")
+
+    output.append(
+        "\nThese results are retrieved from the live job API."
+    )
+
+    for index, job in enumerate(results, start=1):
+
+        output.append("\n" + "-" * 40)
+
+        output.append(f"\n{index}. {job['title']}")
+
+        output.append(
+            f"Company: {job['company']}"
+        )
+
+        output.append(
+            f"Location: {job['location']}"
+        )
+
+        output.append(
+            f"Job Type: {job['job_type']}"
+        )
+
+        output.append(
+            f"Experience: {job['experience']}"
+        )
+
+        output.append(
+            f"Posted Date: {job['posted_date']}"
+        )
+
+        output.append(
+            f"Skills Match: {job['match_percentage']}%"
+        )
+
+        if job["matched_skills"]:
+            output.append(
+                "Matching Skills: "
+                + ", ".join(job["matched_skills"])
+            )
+
+        if job["missing_skills"]:
+            output.append(
+                "Skills Not Found in Listing: "
+                + ", ".join(job["missing_skills"])
+            )
+
+        output.append(
+            "\nDescription: "
+            + job["description"][:600]
+        )
+
+        output.append(
+            "\nRequired Skills: "
+            + job["skills"][:400]
+        )
+
+        output.append(
+            "\nResponsibilities: "
+            + job["responsibilities"][:400]
+        )
+
+        output.append(
+            "\nApply Here: "
+            + (
+                job["apply_link"]
+                if job["apply_link"]
+                else "Application link not provided"
+            )
+        )
+
+    output.append(
+        "\n\nNote: Skill match is based on keywords "
+        "in your profile and the available job listing. "
+        "It is not a guarantee of eligibility."
+    )
+
+    return "\n".join(output)
 
 
-# -----------------------------
-# CORS CONFIGURATION
-# -----------------------------
+# ---------------- HEALTH CHECK ----------------
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"]
-)
+@app.get("/")
+def home():
 
+    return {
+        "message": "Live Job Search Agent is running!"
+    }
 
-# -----------------------------
-# HEALTH CHECK
-# -----------------------------
 
 @app.get("/health")
 def health():
 
     return {
         "status": "healthy",
-        "agent": "Live Job Search Agent"
+        "job_api_key_configured": bool(INDIAN_API_KEY),
+        "gemini_configured": bool(GEMINI_API_KEY)
     }
 
 
-# -----------------------------
-# TEST LIVE JOB API
-# -----------------------------
+# ---------------- LIVE JOB API TEST ----------------
 
 @app.get("/live-jobs")
 def live_jobs():
 
-    try:
+    jobs = fetch_live_jobs(50)
 
-        jobs = fetch_live_jobs(limit=10)
-
-        return {
-            "total": len(jobs),
-            "jobs": jobs
-        }
-
-    except Exception as e:
-
-        raise HTTPException(
-            status_code=500,
-            detail=str(e)
-        )
+    return {
+        "total": len(jobs),
+        "jobs": jobs
+    }
 
 
-# -----------------------------
-# INPUT MODEL
-# -----------------------------
+# ---------------- AGENT INVOKE ----------------
 
-class JobInput(BaseModel):
+class AgentRequest(BaseModel):
 
-    input: str = Field(
-        description="Job role, location and user skills"
-    )
+    input: str
 
-
-# -----------------------------
-# AGENT INVOKE ENDPOINT
-# -----------------------------
 
 @app.post("/agent/invoke")
-def invoke_agent(data: JobInput):
+def invoke_agent(request: AgentRequest):
 
-    try:
+    user_input = request.input.strip()
 
-        user_request = data.input
-
-        prompt = """
-You are a Live Job Search Agent.
-
-IMPORTANT RULES:
-
-1. Use the search_jobs tool to retrieve real vacancies.
-2. Do not invent companies, jobs, salaries or application links.
-3. Use the match_skills tool to compare the user's skills.
-4. Only recommend jobs returned by the live API.
-5. If no jobs are found, clearly say no matching jobs were found.
-6. If the API returns an error, report the error instead of
-   showing sample jobs.
-7. Display actual company, title, location, experience,
-   salary if available, required skills, and application link.
-8. If salary or any information is missing, say Not provided.
-9. Never claim a job is currently open unless the API
-   listing indicates it is available.
-
-For each job, provide:
-
-Company:
-Job Role:
-Location:
-Experience:
-Salary:
-Required Skills:
-Application Link:
-
-Then give the skill match analysis.
-
-User request:
-""" + user_request
-
-        response = agent.invoke({
-            "messages": [
-                {
-                    "role": "user",
-                    "content": prompt
-                }
-            ]
-        })
-
-        answer = response["messages"][-1].content
-
-        if isinstance(answer, list):
-
-            answer = "\n".join(
-                item.get("text", "")
-                for item in answer
-                if isinstance(item, dict)
-            )
-
-        return {
-            "output": answer
-        }
-
-    except Exception as e:
-
+    if not user_input:
         raise HTTPException(
-            status_code=500,
-            detail=str(e)
+            status_code=400,
+            detail="Please enter a job role and location."
         )
 
+    # Extract job role
 
-# -----------------------------
-# RUN SERVER
-# -----------------------------
+    role_match = re.search(
+        r"(?:find|search(?: for)?)\s+(.+?)\s+jobs?\s+in\s+",
+        user_input,
+        re.IGNORECASE
+    )
+
+    if role_match:
+        role = role_match.group(1).strip()
+
+    else:
+        role = ""
+
+    # Extract location
+
+    location_match = re.search(
+        r"\bjobs?\s+in\s+(.+?)"
+        r"(?=\s+for\s+freshers|\s+for\s+beginners|"
+        r"\s+my skills|\s+skills are|[.!?\n]|$)",
+        user_input,
+        re.IGNORECASE
+    )
+
+    location = (
+        location_match.group(1).strip()
+        if location_match
+        else ""
+    )
+
+    # Extract user skills
+
+    skills_match = re.search(
+        r"(?:my skills are|my skills include|skills are)\s+(.+)",
+        user_input,
+        re.IGNORECASE
+    )
+
+    skills = ""
+
+    if skills_match:
+
+        skills = skills_match.group(1).strip()
+
+        skills = re.split(
+            r"\.\s|\.?$",
+            skills
+        )[0].strip()
+
+    # Search the actual job API
+
+    results = search_jobs(
+        role=role,
+        location=location,
+        skills=skills,
+        limit=50
+    )
+
+    answer = format_results(
+        results,
+        role,
+        location,
+        skills
+    )
+
+    return {
+        "output": answer,
+        "total_jobs": len(results),
+        "role": role,
+        "location": location,
+        "skills": skills
+    }
+
+
+# ---------------- RUN SERVER ----------------
 
 if __name__ == "__main__":
 
     import uvicorn
 
+    port = int(os.environ.get("PORT", 8000))
+
     uvicorn.run(
         app,
         host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8000))
+        port=port
     )
