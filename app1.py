@@ -1,7 +1,9 @@
+
 import os
 import json
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -221,6 +223,7 @@ agent = create_react_agent(
     tools
 )
 
+
 # -----------------------------
 # AGENT FUNCTION
 # -----------------------------
@@ -259,6 +262,8 @@ def job_recommendation(data):
     return {
         "output": answer
     }
+
+
 # -----------------------------
 # API INPUT AND OUTPUT
 # -----------------------------
@@ -292,6 +297,21 @@ app = FastAPI(
 )
 
 
+# CORS: Allow frontend to connect to backend
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# -----------------------------
+# HEALTH CHECK
+# -----------------------------
+
 @app.get("/health")
 def health():
     return {
@@ -300,7 +320,9 @@ def health():
     }
 
 
-from fastapi import HTTPException
+# -----------------------------
+# AGENT API
+# -----------------------------
 
 @app.post("/agent/invoke")
 def invoke_agent(data: JobInput):
