@@ -215,15 +215,13 @@ def filter_jobs(
 
 tools = [
     search_jobs,
-    match_skills,
-    filter_jobs
+    match_skills
 ]
 
 agent = create_react_agent(
     llm,
     tools
 )
-
 
 # -----------------------------
 # AGENT FUNCTION
@@ -237,7 +235,16 @@ def job_recommendation(data):
         "messages": [
             {
                 "role": "user",
-                "content": user_request
+                "content": (
+                    "You are a Job Search Agent. "
+                    "Use search_jobs to find matching jobs. "
+                    "Use match_skills to compare the user's skills. "
+                    "Call only one tool at a time. "
+                    "After getting the results, provide a "
+                    "clear summary of the jobs and skill matches. "
+                    "Do not invent job listings.\n\n"
+                    + user_request
+                )
             }
         ]
     })
@@ -254,8 +261,6 @@ def job_recommendation(data):
     return {
         "output": answer
     }
-
-
 # -----------------------------
 # API INPUT AND OUTPUT
 # -----------------------------
