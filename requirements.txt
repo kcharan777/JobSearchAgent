@@ -7,3 +7,4 @@ langserve
 sse_starlette
 pydantic
 orjson
+requests
