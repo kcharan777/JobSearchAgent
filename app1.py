@@ -225,6 +225,7 @@ def calculate_skill_match(user_skills, job):
 
 # ---------------- SEARCH LIVE JOBS ----------------
 
+
 def search_jobs(role, location="", skills="", limit=50):
 
     jobs = fetch_live_jobs(limit)
@@ -238,35 +239,40 @@ def search_jobs(role, location="", skills="", limit=50):
 
         job = get_job_details(raw_job)
 
-        searchable_text = (
-            job["title"] + " " +
+        # Use the actual job title first
+        job_title = (
+            job["title"]
+        ).lower()
+
+        description = (
             job["description"] + " " +
             job["skills"] + " " +
             job["responsibilities"]
         ).lower()
 
-        # Match the requested job role
+        searchable_text = (
+            job_title + " " + description
+        )
 
+        # Role matching: check title OR description
         if role:
 
             role_words = [
                 word for word in role.split()
                 if word not in [
                     "job", "jobs", "fresher",
-                    "freshers", "for", "in"
+                    "freshers", "for", "in",
+                    "intern", "internship"
                 ]
             ]
 
-            if role_words and not all(
+            if role_words and not any(
                 word in searchable_text
                 for word in role_words
             ):
-                # Accept if the complete role appears
-                if role not in searchable_text:
-                    continue
+                continue
 
-        # Match the requested location
-
+        # Location matching
         if location:
 
             job_location = job["location"].lower()
@@ -278,8 +284,8 @@ def search_jobs(role, location="", skills="", limit=50):
                 "chennai": ["chennai"],
                 "pune": ["pune"],
                 "mumbai": ["mumbai"],
-                "delhi": ["delhi", "new delhi"],
-                "remote": ["remote", "work from home", "wfh"]
+                "delhi": ["delhi"],
+                "remote": ["remote", "work from home"]
             }
 
             locations_to_check = location_aliases.get(
@@ -291,9 +297,9 @@ def search_jobs(role, location="", skills="", limit=50):
                 loc in job_location
                 for loc in locations_to_check
             ) and "remote" not in job_location:
-
                 continue
 
+        # Calculate skill match
         matched, missing, percentage = (
             calculate_skill_match(skills, job)
         )
@@ -305,7 +311,6 @@ def search_jobs(role, location="", skills="", limit=50):
         results.append(job)
 
     return results
-
 
 # ---------------- FORMAT RESULTS ----------------
 
