@@ -87,7 +87,8 @@ JOBS = [
 llm = ChatGoogleGenerativeAI(
     model="gemini-3.8-flash",
     google_api_key=os.environ["GEMINI_API_KEY"],
-    temperature=0
+    temperature=0,
+    max_retries=5
 )
 
 
